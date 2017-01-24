@@ -1,6 +1,10 @@
+import argparse
+
 import ctypes
 import ctypes.wintypes as wintypes
 from ctypes import windll
+
+LPCSTR = LPCTSTR = ctypes.c_char_p
 
 # https://gist.github.com/santa4nt/11068180
 
@@ -72,8 +76,10 @@ SERVICE_ERROR_IGNORE = 0x00000000
 SERVICE_ERROR_NORMAL = 0x00000001
 SERVICE_ERROR_SEVERE = 0x00000002
 
-def install_driver(name, pe_path):
-	service_handle = create_service(
+def install_driver(driver_name, pe_path):
+    sc_manager_handle = open_sc_manager(None, None, SERVICE_ALL_ACCESS)
+    service_handle = create_service(
+        sc_manager_handle,
 		driver_name,
 		driver_name,
 		SERVICE_ALL_ACCESS,
@@ -87,10 +93,10 @@ def install_driver(name, pe_path):
 		None,
 		None
 	)
-	if service_handle == NULL:
-		return False
-	close_service_handle(service_handle)
-	return True
+    if service_handle == NULL:
+        return False
+    close_service_handle(service_handle)
+    return True
 
 def uninstall_driver(service_manager_handle, driver_name, driver_pe_path):
 	service_handle = open_service(service_manager_handle, driver_name, SERVICE_ALL_ACCESS)
@@ -118,7 +124,7 @@ def stop_driver(service_manager_handle, driver_name):
 	return ret
 
 def open_device(device_path, access, mode, creation, flags):
-	"""See: CreateFile function
+    """See: CreateFile function
     http://msdn.microsoft.com/en-us/library/windows/desktop/aa363858(v=vs.85).aspx
     """
     CreateFile_Fn = windll.kernel32.CreateFileW
@@ -140,8 +146,8 @@ def open_device(device_path, access, mode, creation, flags):
                          flags,
                          NULL))
 
-def send_ioctl(devhandle, ioctl, inbuf, inbufsiz, outbuf, outbufsiz,):
-	"""See: DeviceIoControl function
+def send_ioctl(devhandle, ioctl, inbuf, inbufsiz, outbuf, outbufsiz):
+    """See: DeviceIoControl function
     http://msdn.microsoft.com/en-us/library/aa363216(v=vs.85).aspx
     """
     DeviceIoControl_Fn = windll.kernel32.DeviceIoControl
@@ -170,44 +176,29 @@ def send_ioctl(devhandle, ioctl, inbuf, inbufsiz, outbuf, outbufsiz,):
                   None)
 
     return status, dwBytesReturned
-def load_device_driver():
- const TCHAR * Name, const TCHAR * Path, 
-					  HANDLE * lphDevice, PDWORD Error )
-{
-	SC_HANDLE	schSCManager;
-	BOOL		okay;
+    
+def load_device_driver(name, path, lph_device, error):
+    schSCManager = open_sc_manager(None, None, SC_MANAGER_ALL_ACCESS)
+    remove_driver(schSCManager, name)
 
-	schSCManager = OpenSCManager( NULL, NULL, SC_MANAGER_ALL_ACCESS );
+    install_driver(schSCManager, name, path)
 
-	// Remove old instances
-	RemoveDriver( schSCManager, Name );
+    start_driver(schSCManager, name)
 
-	// Ignore success of installation: it may already be installed.
-	InstallDriver( schSCManager, Name, Path );
+    okay = open_device(name, lphDevice)
+    close_service_handle(schSCManager)
 
-	// Ignore success of start: it may already be started.
-	StartDriver( schSCManager, Name );
+    return okay;
 
-	// Do make sure we can open it.
-	okay = OpenDevice( Name, lphDevice );
-	*Error = GetLastError();
- 	CloseServiceHandle( schSCManager );
+def unload_device_driver(name):
 
-	return okay;
-def unload_device_driver():
-SC_HANDLE	schSCManager;
+    schSCManager = open_sc_manager(None, None, SC_MANAGER_ALL_ACCESS)
 
-	schSCManager = OpenSCManager(	NULL,                 // machine (NULL == local)
-                              		NULL,                 // database (NULL == default)
-									SC_MANAGER_ALL_ACCESS // access required
-								);
-
-	StopDriver( schSCManager, Name );
-	RemoveDriver( schSCManager, Name );
+    stop_driver(schSCManager, name)
+    remove_driver(schSCManager, name)
 	 
-	CloseServiceHandle( schSCManager );
-
-	return TRUE;
+    close_service_handle(schSCManager)
+    
 def ctl_code(device_type, function, method, access):
 	return (device_type << 16) | (access << 14) | function << 2 | method
 
@@ -221,24 +212,24 @@ def create_service(service_manager_handle, service_name, display_name, desired_a
 	https://msdn.microsoft.com/en-gb/library/windows/desktop/ms682450(v=vs.85).aspx
 	"""
 
-	CreateService_Fn = windll.Advapi32.CreateService	#SC_HANDLE WINAPI CreateService(
+	CreateService_Fn = windll.Advapi32.CreateServiceA	#SC_HANDLE WINAPI CreateService(
 	CreateService_Fn.argtypes = [						#
 		wintypes.SC_HANDLE,								#	_In_      SC_HANDLE hSCManager,
-		wintypes.LPCTSTR,								#	_In_      LPCTSTR   lpServiceName,	
-		wintypes.LPCTSTR,								#	_In_opt_  LPCTSTR   lpDisplayName,
+		LPCTSTR,								        #	_In_      LPCTSTR   lpServiceName,	
+		LPCTSTR,								        #	_In_opt_  LPCTSTR   lpDisplayName,
 		wintypes.DWORD,									#	_In_      DWORD     dwDesiredAccess,
 		wintypes.DWORD,									#	_In_      DWORD     dwServiceType,
 		wintypes.DWORD,									#	_In_      DWORD     dwStartType,	
 		wintypes.DWORD,									#	_In_      DWORD     dwErrorControl,
-		wintypes.LPCTSTR,								#	_In_opt_  LPCTSTR   lpBinaryPathName,
-		wintypes.LPCTSTR,								#	_In_opt_  LPCTSTR   lpLoadOrderGroup,
-		wintypes.LPDWORD,								#	_Out_opt_ LPDWORD   lpdwTagId,
-		wintypes.LPCTSTR,								#	_In_opt_  LPCTSTR   lpDependencies,	
-		wintypes.LPCTSTR,								#	_In_opt_  LPCTSTR   lpServiceStartName,
-		wintypes.LPCTSTR								#	_In_opt_  LPCTSTR   lpPassword
+		LPCTSTR,								        #	_In_opt_  LPCTSTR   lpBinaryPathName,
+		LPCTSTR,								        #	_In_opt_  LPCTSTR   lpLoadOrderGroup,
+		LPDWORD,								        #	_Out_opt_ LPDWORD   lpdwTagId,
+		LPCTSTR,								        #	_In_opt_  LPCTSTR   lpDependencies,	
+		LPCTSTR,								        #	_In_opt_  LPCTSTR   lpServiceStartName,
+		LPCTSTR								            #	_In_opt_  LPCTSTR   lpPassword
 	]
-	ControlService_Fn.restype = wintypes.SC_HANDLE
-	handle = ControlService_Fn(
+	CreateService_Fn.restype = wintypes.SC_HANDLE
+	handle = CreateService_Fn(
 		service_manager_handle, 
 		service_name, 
 		display_name, 
@@ -279,8 +270,8 @@ def control_service(service_handle, control, service_status):
 	"""
 	ControlService_Fn = windll.Advapi32.ControlService	 	#BOOL WINAPI ControlService(
 	ControlService_Fn.argtypes = [							#
-		wintypes.SC_HANDLE									#	_In_  SC_HANDLE        hService,
-		wintypes.DWORD										#	_In_  DWORD            dwControl,
+		wintypes.SC_HANDLE,									#	_In_  SC_HANDLE        hService,
+		wintypes.DWORD,										#	_In_  DWORD            dwControl,
 		wintypes.LPSERVICE_STATUS							#	_Out_ LPSERVICE_STATUS lpServiceStatus
 	]
 	ControlService_Fn.restype = wintypes.BOOL
@@ -323,10 +314,10 @@ def open_sc_manager(machine_name, database_name, desired_access):
 	"""See: OpenSCManager function
 	https://msdn.microsoft.com/en-us/library/windows/desktop/ms684323(v=vs.85).aspx
 	"""
-	OpenSCManager_Fn = windll.Advapi32.OpenSCManager	#SC_HANDLE WINAPI OpenSCManager(
+	OpenSCManager_Fn = windll.Advapi32.OpenSCManagerA	#SC_HANDLE WINAPI OpenSCManager(
 	OpenSCManager_Fn.argtypes = [						#
-		wintypes.LPCTSTR,								#	_In_opt_ LPCTSTR lpMachineName,
-		wintypes.LPCTSTR,								#	_In_opt_ LPCTSTR lpDatabaseName,
+		LPCTSTR,								#	_In_opt_ LPCTSTR lpMachineName,
+		LPCTSTR,								#	_In_opt_ LPCTSTR lpDatabaseName,
 		wintypes.DWORD									#	_In_     DWORD   dwDesiredAccess
 	]
 	OpenSCManager_Fn.restype = wintypes.SC_HANDLE
@@ -355,4 +346,36 @@ def start_service(service_handle, service_arg_count, service_arg_vectors):
 		service_arg_vectors
 	)
 	return bool
+    
+def remove_driver(SchSCManager, driver_name):
+
+    schService = open_service(SchSCManager, driver_name, SERVICE_ALL_ACCESS )
+
+    if schService == None:
+        return False
+
+    ret = delete_service(schService)
+    close_service_handle(schService)
+
+    return ret
+    
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="A tool for loading windows drivers")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--register', nargs=2, help='register driver', metavar=('NAME','PE_PATH'))
+    group.add_argument('--unregister', nargs=2, help='unregister driver', metavar=('NAME','PE_PATH'))
+    group.add_argument('--start', help='start driver', metavar=('NAME'))
+    group.add_argument('--stop', help='stop driver', metavar=('NAME'))
+    args = parser.parse_args()
+    if args.register:
+        name = args.register[1]
+        path = args.register[0]
+        installed = install_driver(name, path)
+        if not installed:
+            print "Failed to register driver %s,%s" % (name,path)
+    elif args.unregister:
+        print args 
+    elif args.start:
+        print args
+    else:
+        print args
